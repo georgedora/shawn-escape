@@ -457,7 +457,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-o
 #rotate{display:none;position:fixed;inset:0;z-index:999;background:#0d0e12;color:#f3f4f6;flex-direction:column;align-items:center;justify-content:center;gap:18px;font-family:"Noto Sans TC",sans-serif;text-align:center;padding:30px}
 #rotate .ph{width:70px;height:120px;border:6px solid #d6aa4f;border-radius:14px;animation:rot 1.8s ease-in-out infinite}
 @keyframes rot{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}
-@media (orientation:portrait) and (max-width:900px){#rotate{display:flex}}
+
 html,body{overscroll-behavior:none;touch-action:manipulation}
 </style>
 </head>
@@ -572,9 +572,10 @@ const norm=s=>String(s).normalize("NFKC").toLowerCase().replace(/[\s，。,.!！
 /* ======================= 縮放 ======================= */
 function fit(){
   const w=document.documentElement.clientWidth||innerWidth, h=document.documentElement.clientHeight||innerHeight;
-  const k=Math.min(w/1600, h/900);
-  if(!k||!isFinite(k)){ requestAnimationFrame(fit); return; }   // 內嵌視窗剛載入時尺寸可能是 0，等它有尺寸再縮放
-  $("stage").style.transform=`translate(-50%,-50%) scale(${k})`;
+  const port=h>w*1.05;   // 直拿手機（含 IG 內建瀏覽器不會轉向）→ 把畫面轉 90 度，橫拿就能玩
+  const k=port?Math.min(h/1600, w/900):Math.min(w/1600, h/900);
+  if(!k||!isFinite(k)){ requestAnimationFrame(fit); return; }
+  $("stage").style.transform=`translate(-50%,-50%) ${port?"rotate(90deg) ":""}scale(${k})`;
 }
 addEventListener("resize",fit);
 try{ new ResizeObserver(fit).observe(document.documentElement); }catch(e){}
@@ -1227,50 +1228,54 @@ function galClose(){ clearTimeout(gal.t); const el=$("gallery"); el.querySelecto
 document.addEventListener("keydown",e=>{ if(!$("gallery").classList.contains("show")) return;
   if(e.key==="ArrowRight"){ galStep(1); e.preventDefault(); } else if(e.key==="ArrowLeft"){ galStep(-1); e.preventDefault(); } else if(e.key==="Escape") galClose(); });
 
-/* ======================= 計時排行榜 =======================
+/* ======================= 通關紀念牆 =======================
    LB_URL：填入 Google Apps Script 網頁應用程式網址，就會變成全球排行榜；留空則只記錄在這台裝置上。 */
 const LB_URL = "https://script.google.com/macros/s/AKfycbw9br2SN52n6Ch8zTrJm3Sk3uQlmdv8RzfQyu9z1RBwXpvmLrmLNLkHJ-gNs9P0nzA6/exec";
 const LBK="shawn-escape-lb";
 function lbLocal(){ try{ return JSON.parse(localStorage.getItem(LBK)||"[]"); }catch(e){ return []; } }
 function lbTotal(){ return S.times.reduce((a,b)=>a+(b||0),0); }
 function lbEsc(x){ return String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-async function lbFetch(mode){
-  if(LB_URL){ try{ const r=await fetch(LB_URL+"?mode="+mode,{cache:"no-store"}); const j=await r.json(); if(Array.isArray(j)) return {global:true,rows:j}; }catch(e){} }
-  return {global:false,rows:lbLocal().filter(x=>x.mode===mode).sort((a,b)=>a.t-b.t).slice(0,50)};
+async function lbFetch(){
+  if(LB_URL){ try{
+      const j=await fetch(LB_URL+"?mode=all",{cache:"no-store"}).then(r=>r.json());
+      if(j&&Array.isArray(j.wall)) return {global:true,rows:j.wall,total:j.total||j.wall.length};
+      // 舊版試算表程式：一般＋困難合併
+      const [n,h]=await Promise.all(["n","h"].map(m=>fetch(LB_URL+"?mode="+m,{cache:"no-store"}).then(r=>r.json())));
+      const rows=[...n,...h].sort((a,b)=>String(a.at).localeCompare(String(b.at)));
+      return {global:true,rows,total:rows.length};
+    }catch(e){} }
+  const rows=lbLocal().sort((a,b)=>String(a.at).localeCompare(String(b.at)));
+  return {global:false,rows,total:rows.length};
 }
 async function lbSubmit(name){
   const rec={name,mode:HARD?"h":"n",t:lbTotal(),at:new Date().toLocaleDateString("sv-SE"),me:1};
   const L=lbLocal(); L.push(rec); try{ localStorage.setItem(LBK,JSON.stringify(L.slice(-200))); }catch(e){}
   let ok=true;
   if(LB_URL){ try{ await fetch(LB_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({name,mode:rec.mode,t:rec.t})}); }catch(e){ ok=false; } }
-  S.lbDone=true; save(); return ok;
+  S.lbDone=true; S.lbName=name; save(); return ok;
 }
-let lbMode="n";
-async function lbShow(mode){
-  lbMode=mode||lbMode;
-  modal(`<h2>🏆 計時排行榜</h2>
-    <div class="row" style="justify-content:center;gap:10px;margin-top:4px">
-      <button class="btn ${lbMode==="n"?"":"ghost"}" data-act="lbTab" data-n="n">一般版</button>
-      <button class="btn ${lbMode==="h"?"":"ghost"}" data-act="lbTab" data-n="h" style="${lbMode==="h"?"background:#c0392b;color:#fff":""}">🔥 困難版</button></div>
-    <div id="lbList" style="margin-top:12px;min-height:200px;font-size:22px;color:#9aa0aa;text-align:center">讀取中……</div>`);
-  const {global,rows}=await lbFetch(lbMode); const el=$("lbList"); if(!el) return;
-  if(!rows.length){ el.innerHTML=`還沒有人上榜，快來當第一名！`; return; }
-  el.innerHTML=`<div style="font-size:15px;margin-bottom:8px">${global?"全服排行榜（前 50 名）":"這台裝置上的紀錄"}</div>
-    <div style="max-height:430px;overflow:auto;text-align:left">${rows.map((r,i)=>`<div style="display:flex;gap:14px;align-items:center;padding:8px 14px;border-radius:10px;margin-bottom:6px;background:${i<3?"rgba(214,170,79,.18)":"rgba(255,255,255,.05)"};color:#f3f4f6">
-      <b style="width:48px;font-size:26px;color:${["#ffd25c","#d9dde3","#e0a46a"][i]||"#9aa0aa"}">${["🥇","🥈","🥉"][i]||(i+1)}</b>
-      <span style="flex:1;font-weight:900">${lbEsc(r.name)}</span>
-      <span style="font-family:Russo One,monospace;font-size:26px;color:#ffe7a8">${fmt(+r.t||0)}</span>
-      <span style="font-size:14px;color:#9aa0aa;width:96px;text-align:right">${lbEsc(String(r.at||"").slice(0,10))}</span></div>`).join("")}</div>`;
+async function lbShow(){
+  modal(`<h2>🎂 通關紀念牆</h2><p style="font-size:18px;color:#9aa0aa;margin-top:-4px">幫學長拿回生日禮物的學弟妹們</p>
+    <div id="lbList" style="margin-top:10px;min-height:200px;font-size:22px;color:#9aa0aa;text-align:center">讀取中……</div>`);
+  const {global,rows,total}=await lbFetch(); const el=$("lbList"); if(!el) return;
+  if(!rows.length){ el.innerHTML=`還沒有人留下名字，快來當第一位！`; return; }
+  const show=rows.map((r,i)=>({...r,no:i+1+(total-rows.length)})).reverse();
+  el.innerHTML=`<div style="font-size:16px;margin-bottom:10px">${global?`目前共 <b style="color:#ffe7a8;font-size:22px">${total}</b> 位學弟妹通關`:"這台裝置上的通關紀錄"}</div>
+    <div style="max-height:430px;overflow:auto;display:flex;flex-wrap:wrap;gap:10px;justify-content:center;padding:4px">${show.map(r=>`<div style="display:flex;flex-direction:column;align-items:center;gap:2px;min-width:150px;padding:10px 14px;border-radius:14px;
+        background:${r.mode==="h"?"rgba(192,57,43,.22)":"rgba(214,170,79,.16)"};border:2px solid ${r.mode==="h"?"#c0392b":"#d6aa4f"};color:#f3f4f6;${S.lbName&&r.name===S.lbName?"box-shadow:0 0 0 3px #fff;":""}">
+      <span style="font-size:13px;color:#9aa0aa">第 ${r.no} 位</span>
+      <b style="font-size:22px;word-break:break-all">${lbEsc(r.name)}</b>
+      <span style="font-size:14px">${r.mode==="h"?"🔥 困難版":"一般版"}・${lbEsc(String(r.at||"").slice(5).replace("-","/"))}</span></div>`).join("")}</div>`;
 }
 function lbPrompt(){
-  if(S.jumped){ modal(`<h2>🏆 排行榜</h2><p>這一輪有用「選擇關卡」跳關，成績不能登記。<br>從主選單按「從頭重新開始」，一路破到底就能上榜！</p><div class="row"><button class="btn ghost" data-act="lbOpen">看排行榜</button></div>`); return; }
-  if(S.lbDone){ lbShow(HARD?"h":"n"); return; }
-  modal(`<h2>🏆 登上排行榜</h2><p style="font-size:24px">${HARD?"🔥 困難版":"一般版"}　總時間 <b style="font-family:Russo One;font-size:40px;color:#ffe7a8">${fmt(lbTotal())}</b><br><small style="color:#9aa0aa">（含答錯的罰秒）</small></p>
-    <form id="lbf" class="row" style="justify-content:center"><input class="inp" id="lbn" maxlength="12" autocomplete="off" placeholder="你的暱稱（12 字內）" style="width:340px;font-size:26px;text-align:center"><button class="btn">送出成績</button></form>
-    <div class="row" style="justify-content:center"><button class="btn ghost" data-act="lbOpen">先看排行榜</button></div>`);
+  if(S.jumped){ modal(`<h2>🎂 通關紀念牆</h2><p>這一輪有用「選擇關卡」跳關，不能留下名字。<br>從主選單按「從頭重新開始」，一路破到底就能上牆！</p><div class="row"><button class="btn ghost" data-act="lbOpen">看紀念牆</button></div>`); return; }
+  if(S.lbDone){ lbShow(); return; }
+  modal(`<h2>🎂 恭喜通關！</h2><p style="font-size:24px">你幫學長拿回了生日禮物！<br>在紀念牆上留下你的名字吧～</p>
+    <form id="lbf" class="row" style="justify-content:center"><input class="inp" id="lbn" maxlength="12" autocomplete="off" placeholder="你的暱稱（12 字內）" style="width:340px;font-size:26px;text-align:center"><button class="btn">簽名上牆</button></form>
+    <div class="row" style="justify-content:center"><button class="btn ghost" data-act="lbOpen">先看紀念牆</button></div>`);
   setTimeout(()=>{ const i=$("lbn"); if(i) i.focus(); },60);
   $("lbf").addEventListener("submit",async e=>{ e.preventDefault(); const v=$("lbn").value.trim().slice(0,12); if(!v){ toast("先輸入暱稱喔！"); return; }
-    const ok=await lbSubmit(v); sfx.unlock(); confetti(); if(!ok) toast("連不上全服排行榜，先記在這台裝置上了"); lbShow(HARD?"h":"n"); });
+    const ok=await lbSubmit(v); sfx.unlock(); confetti(); if(!ok) toast("連不上紀念牆，先記在這台裝置上了"); lbShow(); });
 }
 
 /* ======================= 結尾彈幕（聊天室跑馬燈，抖內／贈送會籍高亮） ======================= */
@@ -1342,7 +1347,7 @@ function finale(){
       <button class="photo5" data-act="photo5" aria-label="打開照片"><div class="ph"><span>？</span></div><div class="cap">神秘照片</div></button>
     </div>
     <div class="row" style="justify-content:center">
-      <button class="btn" id="blowBtn" data-act="cake2">吹蠟燭</button><button class="btn" data-act="lbSend" style="background:#f2c14e;color:#16171a">🏆 登上排行榜</button><button class="btn ghost" data-act="allMerch">🎁 全部新商品</button><button class="btn ghost" data-act="menu">回到主選單</button><button class="btn ghost" data-act="newgame">重新開始</button></div>`;
+      <button class="btn" id="blowBtn" data-act="cake2">吹蠟燭</button><button class="btn" data-act="lbSend" style="background:#f2c14e;color:#16171a">🎂 通關紀念牆</button><button class="btn ghost" data-act="allMerch">🎁 全部新商品</button><button class="btn ghost" data-act="menu">回到主選單</button><button class="btn ghost" data-act="newgame">重新開始</button></div>`;
   $("screen").classList.add("show");
   renderStickers(); renderWish();
   if(!S.lbDone&&!S.jumped&&!S.lbAsked){ S.lbAsked=true; save(); setTimeout(()=>{ if(S.phase==="end"&&!$("modal").classList.contains("show")) lbPrompt(); },2500); }
@@ -1393,7 +1398,7 @@ function showMenu(){
     <div class="row" style="justify-content:center">
       ${started?`<button class="btn" data-act="resume" style="font-size:24px;padding:14px 34px">繼續目前進度（第 ${S.room+1} 關）</button>`:""}
       <button class="btn ${started?"ghost":""}" data-act="newgame" style="font-size:24px;padding:14px 34px">${started?"從頭重新開始":"開始遊戲"}</button></div>
-    <div class="row" style="justify-content:center;margin-top:-4px"><button class="btn ghost" data-act="storyReplay">重看開場劇情</button><button class="btn ghost" data-act="lbOpen">🏆 排行榜</button></div>
+    <div class="row" style="justify-content:center;margin-top:-4px"><button class="btn ghost" data-act="storyReplay">重看開場劇情</button><button class="btn ghost" data-act="lbOpen">🎂 通關紀念牆</button></div>
     <div class="note" style="margin-top:10px">選擇關卡</div>
     <div class="row" style="justify-content:center;margin-top:0">${ROOMS.map((r,i)=>`<button class="btn ghost" data-act="hostJump" data-n="${i}">${i+1}. ${r.name}</button>`).join("")}</div>
     <div class="note">重新開始會清除計時、碎片和所有房間的進度。</div>`;
@@ -1421,8 +1426,7 @@ document.addEventListener("click",e=>{
     case "galNext": galStep(1); break;
     case "galGo": gal.i=+n; galShow(); break;
     case "galClose": galClose(); break;
-    case "lbOpen": lbShow(HARD?"h":"n"); break;
-    case "lbTab": lbShow(n); break;
+    case "lbOpen": lbShow(); break;
     case "lbSend": lbPrompt(); break;
     case "selfdub": { const k=+n; S.r2.dub[k]=true; save(); closeModal(); scene(); sfx.unlock(); confetti(); toast(`軌 ${k} 配音完成！聲控鎖登錄成功`); break; }
     case "fs": { const el=document.documentElement; try{ (el.requestFullscreen||el.webkitRequestFullscreen).call(el); screen.orientation&&screen.orientation.lock&&screen.orientation.lock("landscape").catch(()=>{}); }catch(e){ toast("這個瀏覽器不支援全螢幕"); } break; }
